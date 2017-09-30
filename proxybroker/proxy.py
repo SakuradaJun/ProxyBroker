@@ -1,5 +1,6 @@
 import time
 import asyncio
+import aiosocks
 import warnings
 import ssl as _ssl
 from collections import Counter
@@ -61,7 +62,7 @@ class Proxy:
         return self
 
     def __init__(self, host=None, port=None, types=(),
-                 timeout=8, verify_ssl=False):
+                 timeout=8, verify_ssl=False, auth=None):
         self.host = host
         if not Resolver.host_is_ip(self.host):
             raise ValueError('The host of proxy should be the IP address. '
@@ -71,6 +72,7 @@ class Proxy:
         if self.port > 65535:
             raise ValueError('The port of proxy cannot be greater than 65535')
 
+        self.auth = auth
         self.expected_types = set(types) & {'HTTP', 'HTTPS', 'CONNECT:80',
                                             'CONNECT:25', 'SOCKS4', 'SOCKS5'}
         self._timeout = timeout
@@ -97,9 +99,15 @@ class Proxy:
             s = s.format(tp=tp, lvl=lvl)
             tpinfo.append(s)
         tpinfo = ', '.join(tpinfo)
-        return '<Proxy {code} {avg:.2f}s [{types}] {host}:{port}>'.format(
-               code=self._geo.code, types=tpinfo, host=self.host,
-               port=self.port, avg=self.avg_resp_time)
+
+        if self.auth:
+            return '<Proxy {code} {avg:.2f}s [{types}] {login}:{password}@{host}:{port}>'.format(
+                code=self._geo.code, types=tpinfo, login=self.auth['login'], password=self.auth['password'],
+                host=self.host, port=self.port, avg=self.avg_resp_time)
+        else:
+            return '<Proxy {code} {avg:.2f}s [{types}] {host}:{port}>'.format(
+                   code=self._geo.code, types=tpinfo, host=self.host,
+                   port=self.port, avg=self.avg_resp_time)
 
     @property
     def types(self):
@@ -255,7 +263,7 @@ class Proxy:
         """
         return self._log
 
-    async def connect(self, ssl=False):
+    async def connect(self, dst=None, ssl=False):
         err = None
         msg = '%s' % 'SSL: ' if ssl else ''
         stime = time.time()
@@ -269,9 +277,26 @@ class Proxy:
             else:
                 _type = 'conn'
                 params = {'host': self.host, 'port': self.port}
-            self._reader[_type], self._writer[_type] = \
-                await asyncio.wait_for(asyncio.open_connection(**params),
-                                       timeout=self._timeout)
+
+            if self.ngtr.name in ('SOCKS4', 'SOCKS5') and dst:
+                proxy_auth = None
+                if self.auth:
+                    if self.ngtr.name == 'SOCKS5':
+                        proxy_auth = aiosocks.Socks5Auth(self.auth['login'], self.auth['password'])
+                    elif self.ngtr.name == 'SOCKS4':
+                        proxy_auth = aiosocks.Socks4Auth(self.auth['login'], self.auth['password'])
+
+                proxy_connector = aiosocks.Socks5Addr(self.host, self.port)
+                if self.ngtr.name == 'SOCKS4':
+                    proxy_connector = aiosocks.Socks4Addr(self.host, self.port)
+
+                self._reader[_type], self._writer[_type] = await asyncio.wait_for(
+                    aiosocks.open_connection(proxy=proxy_connector, proxy_auth=proxy_auth, dst=dst, remote_resolve=True),
+                    timeout=self._timeout)
+            else:
+                self._reader[_type], self._writer[_type] = \
+                    await asyncio.wait_for(asyncio.open_connection(**params),
+                                           timeout=self._timeout)
         except asyncio.TimeoutError:
             msg += 'Connection: timeout'
             err = ProxyTimeoutError(msg)

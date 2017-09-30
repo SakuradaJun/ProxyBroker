@@ -170,11 +170,15 @@ class Checker:
         judge = Judge.get_random(proto)
         proxy.log('Selected judge: %s' % judge)
         result = False
+        scheme_port_map = {'HTTP': 80, 'HTTPS': 443, 'SMTP': 25}
         for attempt in range(self._max_tries):
             try:
                 proxy.ngtr = proto
-                await proxy.connect()
-                await proxy.ngtr.negotiate(host=judge.host, ip=judge.ip)
+                if proto in ('SOCKS5', 'SOCKS4'):
+                    await proxy.connect(dst=(judge.ip, scheme_port_map[judge.scheme]))
+                else:
+                    await proxy.connect()
+                    await proxy.ngtr.negotiate(host=judge.host, ip=judge.ip)
                 headers, content, rv = \
                     await _send_test_request(self._method, proxy, judge)
             except ProxyTimeoutError:

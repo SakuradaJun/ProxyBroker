@@ -258,13 +258,43 @@ class Broker:
         to set {(host, port), ...}: {('192.168.0.1', '80'), }
         """
         log.debug('Load proxies from the raw data')
+        proxies = list()
         if isinstance(data, io.TextIOWrapper):
             data = data.read()
+
         if isinstance(data, str):
-            data = IPPortPatternLine.findall(data)
-        proxies = set(data)
-        for proxy in proxies:
-            await self._handle(proxy, check=check)
+            proxy_lines = IPPortPatternLine.findall(data)
+            for line in proxy_lines:
+                proxy_schema, proxy_auth, ip, port = line
+                proxy_types = ()
+
+                if proxy_schema.lower().startswith('socks5://'):
+                    proxy_types = ('SOCKS5',)
+                elif proxy_schema.lower().startswith('socks4://'):
+                    proxy_types = ('SOCKS4',)
+
+                if proxy_auth:
+                    login, password = proxy_auth.rstrip('@').split(':', 1)
+                else:
+                    login, password = None, None
+
+                proxy_item = (ip, port, login, password, proxy_types)
+                assert hash(proxy_item)
+                if proxy_item not in proxies:
+                    proxies.append(proxy_item)
+
+        for proxy_item in proxies:
+            host, port, login, password, proxy_types = proxy_item
+            if login or password:
+                auth = dict(login=login, password=password)
+            else:
+                auth = dict()
+            proxy_kwargs = dict(
+                host=host, port=port,
+                auth=auth,
+                types=proxy_types
+            )
+            await self._handle(proxy_kwargs, check=check)
         await self._on_check.join()
         self._done()
 
@@ -295,10 +325,12 @@ class Broker:
         await self._on_check.join()
         self._done()
 
-    async def _handle(self, proxy, check=False):
+    async def _handle(self, proxy_kwargs, check=False):
+        if isinstance(proxy_kwargs, tuple):
+            proxy_kwargs = dict(host=proxy_kwargs[0], port=proxy_kwargs[1], types=proxy_kwargs[2])
         try:
             proxy = await Proxy.create(
-                *proxy, timeout=self._timeout, resolver=self._resolver,
+                **proxy_kwargs, timeout=self._timeout, resolver=self._resolver,
                 verify_ssl=self._verify_ssl, loop=self._loop)
         except (ResolveError, ValueError):
             return
@@ -312,8 +344,9 @@ class Broker:
             self._push_to_result(proxy)
 
     def _is_unique(self, proxy):
-        if (proxy.host, proxy.port) not in self.unique_proxies:
-            self.unique_proxies[(proxy.host, proxy.port)] = proxy
+        unique_tuple = (proxy.host, proxy.port, tuple(proxy.expected_types), repr(proxy.auth))
+        if proxy not in self.unique_proxies:
+            self.unique_proxies[unique_tuple] = proxy
             return True
         else:
             return False
