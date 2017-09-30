@@ -267,14 +267,20 @@ class Broker:
             for line in proxy_lines:
                 proxy_schema, proxy_auth, ip, port = line
                 proxy_types = ()
+                this_proxy_type = None
 
                 if proxy_schema.lower().startswith('socks5://'):
-                    proxy_types = ('SOCKS5',)
+                    this_proxy_type = 'SOCKS5'
+                    proxy_types = (this_proxy_type,)
                 elif proxy_schema.lower().startswith('socks4://'):
-                    proxy_types = ('SOCKS4',)
+                    this_proxy_type = 'SOCKS4'
+                    proxy_types = (this_proxy_type,)
 
                 if proxy_auth:
-                    login, password = proxy_auth.rstrip('@').split(':', 1)
+                    if this_proxy_type == 'SOCKS4':
+                        login, password = proxy_auth.rstrip('@'), ''
+                    else:
+                        login, password = proxy_auth.rstrip('@').split(':', 1)
                 else:
                     login, password = None, None
 
